@@ -1,100 +1,129 @@
 import os
+import logging
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from pyairtable import Table
+from pyairtable import Api, Base
 from datetime import datetime
 
-# Подключение к Airtable
-AIRTABLE_API_KEY = "YOUR_AIRTABLE_API_KEY"
-BASE_ID = "YOUR_BASE_ID"
-SAMPLES_TABLE = "tblu0hqflvlJRM9mB"
-DATA_TABLE = "tblMVVY0yn12nk9Oo"
-samples_table = Table(AIRTABLE_API_KEY, BASE_ID, SAMPLES_TABLE)
-data_table = Table(AIRTABLE_API_KEY, BASE_ID, DATA_TABLE)
+logging.basicConfig(level=logging.INFO)
+
+# Загружаем переменные окружения из .env файла
+load_dotenv()
+
+# Получаем токен из переменной окружения
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")  # Получите свой API ключ для Airtable
+BASE_ID = os.getenv("BASE_ID")  # Получите ID вашей базы Airtable
+
+# Создаем объект Api и Base
+api = Api(AIRTABLE_API_KEY)
+base = Base(api, BASE_ID)
+
+# Получаем доступ к таблицам через Base
+samples_table = base.table("tblu0hqflvlJRM9mB")
+data_table = base.table("tblMVVY0yn12nk9Oo")
+
 
 # Стартовая команда
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("Start command triggered")
     keyboard = [
-        [InlineKeyboardButton("Выбрать заявление", callback_data="choose_statement")]
+        [InlineKeyboardButton("Выбрать категорию", callback_data="choose_category")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Добро пожаловать! Выберите действие:", reply_markup=reply_markup)
+    logging.info("Sent welcome message")
 
-# Обработчик выбора категории заявления
-async def choose_statement(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Обработчик выбора категории
+async def choose_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # Извлекаем шаблоны из Airtable (категории заявлений)
-    samples = samples_table.all()
-    keyboard = [[InlineKeyboardButton(sample['fields']['Категория'], callback_data=f"category_{sample['id']}")] for sample in samples]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("Выберите категорию заявления:", reply_markup=reply_markup)
+    logging.info(f"Category selection button clicked by {update.effective_user.username}")
+    try:
+        # Извлекаем все уникальные категории из Airtable
+        samples = samples_table.all()
+        categories = set()
 
-# Обработчик выбора шаблона заявления
+        for sample in samples:
+            if 'Категория' in sample['fields']:
+                categories.add(sample['fields']['Категория'])  # Добавляем категорию в набор
+
+        categories = list(categories)  # Преобразуем в список для отображения
+        logging.info(f"Available categories: {categories}")
+
+        if not categories:
+            await query.edit_message_text("Не удалось найти категории заявлений.")
+            return
+
+        keyboard = [
+            [InlineKeyboardButton(category, callback_data=f"category_{category}") for category in categories]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Выберите категорию:", reply_markup=reply_markup)
+        logging.info("Displayed categories to user")
+
+    except Exception as e:
+        logging.error(f"Error fetching categories from Airtable: {e}")
+        await query.edit_message_text("Ошибка при получении данных. Попробуйте позже.")
+
+# Обработчик выбора категории для отображения заявлений
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    sample_id = query.data.split("_")[1]
-    context.user_data['sample_id'] = sample_id
+    category = query.data.split("_")[1]  # Извлекаем категорию из callback_data
 
-    # Извлекаем данные шаблона заявления
-    sample = samples_table.get(sample_id)
-    required_fields = sample['fields']['Список переменных'].split(", ")
-    context.user_data['required_fields'] = required_fields
+    try:
+        # Извлекаем все заявления, которые относятся к выбранной категории
+        samples = samples_table.all()
+        filtered_samples = [sample for sample in samples if 'Категория' in sample['fields'] and sample['fields']['Категория'] == category]
 
-    await query.edit_message_text(f"Вы выбрали заявление: {sample['fields']['Категория']}")
-    await update.callback_query.message.reply_text("Введите данные для заполнения:")
-    await request_next_field(update, context)
+        if not filtered_samples:
+            await query.edit_message_text(f"В категории '{category}' нет заявлений.")
+            return
 
-# Запрос следующего поля
-async def request_next_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    required_fields = context.user_data.get('required_fields', [])
-    if required_fields:
-        next_field = required_fields.pop(0)
-        context.user_data['current_field'] = next_field
-        await update.message.reply_text(f"Введите {next_field}:")
-    else:
-        await generate_statement(update, context)
+        keyboard = [
+            [InlineKeyboardButton(sample['fields']['Название'], callback_data=f"statement_{sample['id']}") for sample in filtered_samples]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"Вы выбрали категорию: {category}\nВыберите заявление:", reply_markup=reply_markup)
 
-# Обработчик ввода данных
-async def handle_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_input = update.message.text
-    current_field = context.user_data.get('current_field')
+    except Exception as e:
+        logging.error(f"Error fetching statements for category {category}: {e}")
+        await query.edit_message_text("Ошибка при получении данных по заявлениям. Попробуйте позже.")
+        
+# Обработчик выбора заявления
+async def handle_statement_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    if current_field:
-        context.user_data[current_field] = user_input
-        await request_next_field(update, context)
+    statement_id = query.data.split("_")[1]  # Извлекаем ID заявления из callback_data
+    logging.info(f"Statement selected: {statement_id}")
 
-# Генерация заявления
-async def generate_statement(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sample_id = context.user_data['sample_id']
-    sample = samples_table.get(sample_id)
-    template = sample['fields']['Образец текста']
+    try:
+        # Извлекаем данные по выбранному заявлению
+        sample = samples_table.get(statement_id)
 
-    # Подстановка данных в шаблон
-    for field, value in context.user_data.items():
-        if field not in ['sample_id', 'required_fields', 'current_field']:
-            template = template.replace(f"{{{{{field}}}}}", value)
+        if 'Название' in sample['fields']:
+            await query.edit_message_text(f"Вы выбрали заявление: {sample['fields']['Название']}")
+        else:
+            await query.edit_message_text("Ошибка! Заявление не найдено.")
 
-    # Сохранение заявки в Table2
-    data_table.create({
-        "ID Шаблона": sample_id,
-        "Пользователь": update.message.from_user.id,
-        "Дата запроса": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Данные пользователя": {key: value for key, value in context.user_data.items() if key not in ['sample_id', 'required_fields', 'current_field']},
-        "Готовый текст": template
-    })
-
-    await update.message.reply_text(f"Ваше заявление:\n\n{template}")
+    except Exception as e:
+        logging.error(f"Error fetching statement with ID {statement_id}: {e}")
+        await query.edit_message_text("Ошибка при получении данных по заявлению. Попробуйте позже.")
 
 # Основной код запуска
-app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
+app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+# Добавляем обработчики команд и callback-данных
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(choose_statement, pattern="choose_statement"))
+app.add_handler(CallbackQueryHandler(choose_category, pattern="choose_category"))
 app.add_handler(CallbackQueryHandler(handle_category_selection, pattern="category_"))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_input))
+app.add_handler(CallbackQueryHandler(handle_statement_selection, pattern="statement_"))
 
+# Запуск бота
 app.run_polling()
