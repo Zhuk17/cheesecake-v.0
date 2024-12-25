@@ -2,7 +2,7 @@ import os
 import logging
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 from pyairtable import Api, Base
 from datetime import datetime
 
@@ -24,7 +24,6 @@ base = Base(api, BASE_ID)
 # Получаем доступ к таблицам через Base
 samples_table = base.table("tblu0hqflvlJRM9mB")
 data_table = base.table("tblMVVY0yn12nk9Oo")
-
 
 # Стартовая команда
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,7 +107,10 @@ async def handle_statement_selection(update: Update, context: ContextTypes.DEFAU
         sample = samples_table.get(statement_id)
 
         if 'Название' in sample['fields']:
-            await query.edit_message_text(f"Вы выбрали заявление: {sample['fields']['Название']}")
+            # Показать подробности о заявлении
+            statement_details = f"Вы выбрали заявление: {sample['fields']['Название']}\n"
+            statement_details += f"Описание: {sample['fields'].get('Описание', 'Нет описания')}"
+            await query.edit_message_text(statement_details)
         else:
             await query.edit_message_text("Ошибка! Заявление не найдено.")
 
